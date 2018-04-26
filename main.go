@@ -26,15 +26,31 @@ import (
 	"os/exec"
 )
 
-var re = regexp.MustCompile("http:\\/\\/data\\.video\\.iqiyi\\.com\\/videos\\/v0\\/([0-9]+)\\/([0-9a-f]+)\\/([0-9a-f]+)\\/")
+const workerCount = 4
+const jobsFile = "jobs.json"
 
 type request struct {
 	req *http.Request
 	res string
 }
 
-//var data = make(map[string]jslice)
+type j struct {
+	Index int    `json:"index"`
+	Url   string `json:"l"`
+}
+
+type downloadContext struct {
+	fn, url string
+}
+
+var re = regexp.MustCompile("http:\\/\\/data\\.video\\.iqiyi\\.com\\/videos\\/v0\\/([0-9]+)\\/([0-9a-f]+)\\/([0-9a-f]+)\\/")
 var requests = make([]request, 0)
+
+type jslice []j
+
+func (a jslice) Len() int           { return len(a) }
+func (a jslice) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a jslice) Less(i, j int) bool { return a[i].Index < a[j].Index }
 
 func main() {
 	log.SetOutput(os.Stderr)
@@ -42,7 +58,17 @@ func main() {
 		listAdapters()
 		return
 	}
-	run()
+
+	if os.Args[1] == "r" {
+		resume()
+	} else {
+		index, err := strconv.ParseInt(os.Args[1], 10, 32)
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		run(index)
+	}
 }
 
 func listAdapters() {
@@ -110,16 +136,11 @@ func (h *httpStream) run() {
 	}
 }
 
-func run() {
+func run(index int64) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
 	var handle *pcap.Handle
 	var err error
-
-	index, err := strconv.ParseInt(os.Args[1], 10, 32)
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	// Set up pcap packet capture
 	devs, _ := pcap.FindAllDevs()
@@ -128,14 +149,14 @@ func run() {
 			log.Printf("Starting capture on interface %s", dev.Name)
 			handle, err = pcap.OpenLive(dev.Name, 4096, true, pcap.BlockForever)
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalln(err)
 			}
 			break
 		}
 	}
 
 	if err := handle.SetBPFFilter("tcp and dst port 80"); err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 
 	// Set up assembly
@@ -174,42 +195,63 @@ func run() {
 	}
 }
 
-type j struct {
-	index int
-	Url   string `json:"l"`
+func resume() {
+	f, err := os.Open(jobsFile)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	buf, err := ioutil.ReadAll(f)
+	f.Close()
+	if err != nil {
+		log.Fatalln(err)
+	}
+	data := make(map[string]jslice)
+	err = json.Unmarshal(buf, &data)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	dumpFunc(data)
 }
-
-type jslice []j
-
-func (a jslice) Len() int           { return len(a) }
-func (a jslice) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a jslice) Less(i, j int) bool { return a[i].index < a[j].index }
 
 func doDump() {
 	data := make(map[string]jslice)
 	for _, req := range requests {
 		resp, err := http.DefaultClient.Do(req.req)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 		rd, _ := ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 		jd := j{}
 		err = json.Unmarshal(rd, &jd)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 		u, err := url.Parse(jd.Url)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
-		jd.index, err = strconv.Atoi(u.Query().Get("qd_index"))
+		jd.Index, err = strconv.Atoi(u.Query().Get("qd_index"))
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 		key := req.res
 		data[key] = append(data[key], jd)
 	}
+	j, err := json.Marshal(data)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	f, err := os.Create(jobsFile)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	f.Write(j)
+	f.Close()
+	dumpFunc(data)
+}
+
+func dumpFunc(data map[string]jslice) {
 	for name, slices := range data {
 		fmt.Printf("\nDumping files for %s\n", name)
 		sort.Sort(slices)
@@ -220,33 +262,27 @@ func doDump() {
 		p := mpb.New(mpb.WithWaitGroup(&wg))
 		downloads := make([][2]string, 0)
 		for _, v := range slices {
-			if v.index == lastIndex {
+			if v.Index == lastIndex {
 				fmt.Printf("!!!!WARNING: Duplicate index %d\n", lastIndex)
 				continue
 			}
-			if v.index != lastIndex+1 {
+			if v.Index != lastIndex+1 {
 				fmt.Printf("!!!!WARNING: Missing index %d\n", lastIndex+1)
 			}
-			lastIndex = v.index
-			fn := fmt.Sprintf("%s_%d.f4v", name, v.index)
+			lastIndex = v.Index
+			fn := fmt.Sprintf("%s_%d.f4v", name, v.Index)
 			fmt.Fprintf(c, "file '%s'\n", fn)
 			downloads = append(downloads, [2]string{fn, v.Url})
 		}
-		wg.Add(len(downloads))
-		for _, v := range downloads {
-			fn := v[0]
-			b := p.AddBar(100,
-				mpb.PrependDecorators(
-					decor.StaticName(fn, 0, decor.DwidthSync|decor.DidentRight),
-					decor.Elapsed(3, decor.DSyncSpace),
-				),
-				mpb.AppendDecorators(
-					decor.CountersKiloByte("%.1f / %.1f", 10, decor.DSyncSpace),
-					decor.StaticName("    ", 0, 0),
-				),
-			)
-			go downloadFunc(fn, v[1], &wg, b)
+		wg.Add(workerCount)
+		downloadChan := make(chan *downloadContext, 256)
+		for i := 0; i < workerCount; i++ {
+			go downloadFunc(&wg, p, downloadChan)
 		}
+		for _, v := range downloads {
+			downloadChan <- &downloadContext{v[0], v[1]}
+		}
+		close(downloadChan);
 		p.Stop()
 		c.Close()
 		fname := name + ".mp4"
@@ -254,22 +290,59 @@ func doDump() {
 		exec.Command("ffmpeg", "-y", "-f", "concat", "-i", cfn, "-c", "copy", fname).Run()
 		fmt.Println("finished")
 	}
+	os.Remove(jobsFile)
 }
 
-func downloadFunc(fn string, url string, wg *sync.WaitGroup, b *mpb.Bar) {
+func downloadFunc(wg *sync.WaitGroup, p *mpb.Progress, dchan chan *downloadContext) {
 	defer wg.Done()
-	resp, err := http.Get(url)
-	if err != nil {
-		log.Fatal(err)
+
+	for {
+		dc, ok := <-dchan
+		if !ok {
+			break
+		}
+		b := p.AddBar(100,
+			mpb.PrependDecorators(
+				decor.StaticName(dc.fn, 0, decor.DwidthSync|decor.DidentRight),
+				decor.Elapsed(3, decor.DSyncSpace),
+			),
+			mpb.AppendDecorators(
+				decor.CountersKiloByte("%.1f / %.1f", 10, decor.DSyncSpace),
+				decor.StaticName("    ", 0, 0),
+			),
+		)
+		doDownload(dc.fn, dc.url, b)
 	}
-	defer resp.Body.Close()
-	out, err := os.Create(fn)
+}
+
+func doDownload(fn, url string, b *mpb.Bar) {
+	client := &http.Client{}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
+	}
+	out, err := os.OpenFile(fn, os.O_RDWR | os.O_CREATE, 0666)
+	if err != nil {
+		log.Fatalln(err)
 	}
 	defer out.Close()
+	off, err := out.Seek(0, io.SeekEnd)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	if off > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", off))
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer resp.Body.Close()
 
 	b.SetTotal(int64(resp.ContentLength), true)
+	if off > 0 {
+		b.Incr(int(off))
+	}
 
 	cache := make([]byte, 65536)
 	for {
@@ -283,7 +356,7 @@ func downloadFunc(fn string, url string, wg *sync.WaitGroup, b *mpb.Bar) {
 				b.Complete()
 				break
 			}
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 	}
 }
