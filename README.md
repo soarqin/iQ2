@@ -6,3 +6,4 @@ Usage
 4. Run `iQ2 <number>` to select a device to capture
 5. Open anime episode on iQIYI, slide the video @ every 3-6 minutes (depends, iQIYI splits videos into 3 or 6 minutes)
 6. Press CTRL+C in terminal to stop capturing, the program will start downloading anime episodes automatically and merge them into a single mp4 if FFmpeg is installed
+7. You can use `iQ2 r` to resume last interrupted downloading
