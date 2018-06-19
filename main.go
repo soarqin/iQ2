@@ -282,8 +282,8 @@ func dumpFunc(data map[string]jslice) {
 		for _, v := range downloads {
 			downloadChan <- &downloadContext{v[0], v[1]}
 		}
-		close(downloadChan);
-		p.Stop()
+		close(downloadChan)
+		p.Wait()
 		c.Close()
 		fname := name + ".mp4"
 		fmt.Printf("->Merging to %s...", fname)
@@ -303,12 +303,12 @@ func downloadFunc(wg *sync.WaitGroup, p *mpb.Progress, dchan chan *downloadConte
 		}
 		b := p.AddBar(100,
 			mpb.PrependDecorators(
-				decor.StaticName(dc.fn, 0, decor.DwidthSync|decor.DidentRight),
-				decor.Elapsed(3, decor.DSyncSpace),
+				decor.StaticName(dc.fn, decor.WC {W:0, C:decor.DSyncWidth|decor.DidentRight}),
+				decor.Elapsed(0, decor.WC {W:3, C:decor.DSyncSpace}),
 			),
 			mpb.AppendDecorators(
-				decor.CountersKiloByte("%.1f / %.1f", 10, decor.DSyncSpace),
-				decor.StaticName("    ", 0, 0),
+				decor.CountersKiloByte("%.1f / %.1f", decor.WC {W:10, C:decor.DSyncSpace}),
+				decor.StaticName("    "),
 			),
 		)
 		doDownload(dc.fn, dc.url, b)
@@ -341,7 +341,7 @@ func doDownload(fn, url string, b *mpb.Bar) {
 
 	b.SetTotal(int64(resp.ContentLength), true)
 	if off > 0 {
-		b.Incr(int(off))
+		b.IncrBy(int(off))
 	}
 
 	cache := make([]byte, 65536)
@@ -349,11 +349,10 @@ func doDownload(fn, url string, b *mpb.Bar) {
 		cnt, err := resp.Body.Read(cache)
 		if cnt > 0 {
 			out.Write(cache[0:cnt])
-			b.Incr(cnt)
+			b.IncrBy(cnt)
 		}
 		if err != nil {
 			if err == io.EOF {
-				b.Complete()
 				break
 			}
 			log.Fatalln(err)
