@@ -339,7 +339,7 @@ func doDownload(fn, url string, b *mpb.Bar) {
 	}
 	defer resp.Body.Close()
 
-	b.SetTotal(int64(resp.ContentLength), true)
+	b.SetTotal(int64(resp.ContentLength + off), true)
 	if off > 0 {
 		b.IncrBy(int(off))
 	}
