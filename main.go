@@ -2,28 +2,28 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 	"github.com/google/gopacket/tcpassembly/tcpreader"
+	"github.com/vbauerster/mpb"
+	"github.com/vbauerster/mpb/decor"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
-	"regexp"
-	"strconv"
-	"time"
-	"os/signal"
-	"encoding/json"
-	"sync"
-	"github.com/vbauerster/mpb"
-	"io/ioutil"
 	"net/url"
-	"sort"
-	"github.com/vbauerster/mpb/decor"
+	"os"
 	"os/exec"
+	"os/signal"
+	"regexp"
+	"sort"
+	"strconv"
+	"sync"
+	"time"
 )
 
 const workerCount = 4
@@ -303,12 +303,11 @@ func downloadFunc(wg *sync.WaitGroup, p *mpb.Progress, dchan chan *downloadConte
 		}
 		b := p.AddBar(100,
 			mpb.PrependDecorators(
-				decor.StaticName(dc.fn, decor.WC {W:0, C:decor.DSyncWidth|decor.DidentRight}),
-				decor.Elapsed(0, decor.WC {W:3, C:decor.DSyncSpace}),
+				decor.StaticName(dc.fn, decor.WC{W: 0, C: decor.DSyncWidth | decor.DidentRight}),
+				decor.Elapsed(0, decor.WC{W: 3, C: decor.DSyncSpace}),
 			),
 			mpb.AppendDecorators(
-				decor.CountersKiloByte("%.1f / %.1f", decor.WC {W:10, C:decor.DSyncSpace}),
-				decor.StaticName("    "),
+				decor.Counters(decor.UnitKiB, "% .1f / % .1f"),
 			),
 		)
 		doDownload(dc.fn, dc.url, b)
@@ -321,7 +320,7 @@ func doDownload(fn, url string, b *mpb.Bar) {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	out, err := os.OpenFile(fn, os.O_RDWR | os.O_CREATE, 0666)
+	out, err := os.OpenFile(fn, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -339,9 +338,11 @@ func doDownload(fn, url string, b *mpb.Bar) {
 	}
 	defer resp.Body.Close()
 
-	b.SetTotal(int64(resp.ContentLength + off), true)
 	if off > 0 {
+		b.SetTotal(int64(resp.ContentLength+off), false)
 		b.IncrBy(int(off))
+	} else {
+		b.SetTotal(int64(resp.ContentLength), false)
 	}
 
 	cache := make([]byte, 65536)
